@@ -22,7 +22,6 @@ import {
 } from './a2a-format.js';
 import { IDENTITY_URI, PlatformStateLabel, extensionsFromMeta } from './platform-metadata.js';
 
-const DEFAULT_API_BASE_URL = 'https://us-central1-agenttrustai.cloudfunctions.net';
 const DEFAULT_ENDPOINT = 'https://agenttrust.ai';
 const CONFIG_DIR = path.join(os.homedir(), '.agenttrust');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -31,7 +30,6 @@ const KEY_DIR = path.join(CONFIG_DIR, 'keys');
 interface RuntimeConfig {
   apiKey: string | null;
   endpoint: string;
-  apiBaseUrl: string;
   slug: string | null;
   agentId: string | null;
 }
@@ -129,7 +127,6 @@ async function writeConfigFile(config: RuntimeConfig): Promise<void> {
   const serializable = {
     apiKey: config.apiKey,
     endpoint: config.endpoint,
-    apiBaseUrl: config.apiBaseUrl,
     slug: config.slug,
     agentId: config.agentId,
   };
@@ -140,13 +137,9 @@ function resolveConfig(fileConfig: Record<string, unknown> | null): RuntimeConfi
   const source = fileConfig || {};
   const apiKey = readString(source.apiKey) || readString(process.env.AGENTTRUST_API_KEY);
   const endpoint = readString(source.endpoint) || readString(process.env.AGENTTRUST_ENDPOINT) || DEFAULT_ENDPOINT;
-  const apiBaseUrl = readString(source.apiBaseUrl)
-    || readString(process.env.AGENTTRUST_API_BASE_URL)
-    || readString(process.env.AGENTTRUST_API_URL)
-    || DEFAULT_API_BASE_URL;
   const slug = readString(source.slug) || readString(process.env.AGENTTRUST_SLUG);
   const agentId = readString(source.agentId) || readString(process.env.AGENTTRUST_AGENT_ID);
-  return { apiKey, endpoint, apiBaseUrl, slug, agentId };
+  return { apiKey, endpoint, slug, agentId };
 }
 
 interface WhoAmIResponse {
@@ -493,7 +486,6 @@ async function runStatusCommand(): Promise<number> {
   console.log(`Config file: ${CONFIG_PATH}`);
   console.log(`API key: ${config.apiKey ? 'configured' : 'missing'}`);
   console.log(`Endpoint: ${config.endpoint}`);
-  console.log(`API base URL: ${config.apiBaseUrl}`);
   console.log(`Slug: ${config.slug || '-'}`);
   console.log(`Agent ID: ${config.agentId || '-'}`);
   console.log(`Local signing key: ${hasLocalKey ? 'present' : 'missing'}`);
@@ -547,9 +539,6 @@ async function runInitCommand(): Promise<number> {
 
   const endpointInput = await promptInput(`Endpoint [${initial.endpoint}] (press Enter to keep default): `);
   const endpoint = endpointInput || initial.endpoint;
-  const apiBaseInput = await promptInput(`API base URL [${initial.apiBaseUrl}] (press Enter to keep default): `);
-  const apiBaseUrl = apiBaseInput || initial.apiBaseUrl;
-
   console.log('Resolving agent identity...');
   const discovered = await resolveAgentIdentityForSetup(endpoint, apiKey);
 
@@ -581,7 +570,6 @@ async function runInitCommand(): Promise<number> {
   const config: RuntimeConfig = {
     apiKey,
     endpoint,
-    apiBaseUrl,
     slug,
     agentId,
   };
@@ -803,7 +791,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!text.trim()) throw makeError('text is required');
       const capabilities = Array.isArray(args?.capabilities) ? args.capabilities : [];
       const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.apiBaseUrl, '/injectionGuard'),
+        safeUrl(config.endpoint, '/api/guard'),
         {
           method: 'POST',
           apiKey: config.apiKey,
@@ -819,7 +807,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!payload.trim()) throw makeError('payload is required');
       const expirationSeconds = typeof args?.expiration_seconds === 'number' ? args.expiration_seconds : 172800;
       const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.apiBaseUrl, '/issue'),
+        safeUrl(config.endpoint, '/api/issue'),
         {
           method: 'POST',
           apiKey: config.apiKey,
@@ -837,7 +825,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const code = typeof args?.code === 'string' ? args.code : '';
       if (!code.trim()) throw makeError('code is required');
       const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.apiBaseUrl, '/verify'),
+        safeUrl(config.endpoint, '/api/verify'),
         {
           method: 'POST',
           apiKey: config.apiKey,

@@ -161,7 +161,6 @@ Config is stored at `~/.agenttrust/config.json` (created by `init`):
 {
   "apiKey": "atk_...",
   "endpoint": "https://agenttrust.ai",
-  "apiBaseUrl": "https://us-central1-agenttrustai.cloudfunctions.net",
   "slug": "your-agent",
   "agentId": "abc123"
 }
@@ -177,7 +176,6 @@ All config values can be overridden with environment variables:
 |----------|-------------|
 | `AGENTTRUST_API_KEY` | API key |
 | `AGENTTRUST_ENDPOINT` | Platform endpoint |
-| `AGENTTRUST_API_BASE_URL` | Cloud Functions base URL |
 | `AGENTTRUST_SLUG` | Agent slug |
 | `AGENTTRUST_AGENT_ID` | Agent ID |
 
