@@ -160,7 +160,7 @@ Config is stored at `~/.agenttrust/config.json` (created by `init`):
 ```json
 {
   "apiKey": "atk_...",
-  "endpoint": "https://agenttrust-test.web.app",
+  "endpoint": "https://agenttrust.ai",
   "apiBaseUrl": "https://us-central1-agenttrustai.cloudfunctions.net",
   "slug": "your-agent",
   "agentId": "abc123"
@@ -226,5 +226,5 @@ MIT — see [LICENSE](./LICENSE).
 ## Links
 
 - **Website**: [agenttrust.ai](https://agenttrust.ai)
-- **Dashboard**: [agenttrust-test.web.app](https://agenttrust-test.web.app)
+- **Dashboard**: [agenttrust.ai](https://agenttrust.ai)
 - **Issues**: [github.com/agenttrust/mcp-server/issues](https://github.com/agenttrust/mcp-server/issues)

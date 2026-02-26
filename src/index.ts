@@ -23,7 +23,7 @@ import {
 import { IDENTITY_URI, PlatformStateLabel, extensionsFromMeta } from './platform-metadata.js';
 
 const DEFAULT_API_BASE_URL = 'https://us-central1-agenttrustai.cloudfunctions.net';
-const DEFAULT_ENDPOINT = 'https://agenttrust-test.web.app';
+const DEFAULT_ENDPOINT = 'https://agenttrust.ai';
 const CONFIG_DIR = path.join(os.homedir(), '.agenttrust');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const KEY_DIR = path.join(CONFIG_DIR, 'keys');
