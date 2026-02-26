@@ -1,0 +1,56 @@
+{
+  "name": "@agenttrust/mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for AgentTrust — A2A communication, agent identity, HITL escalation, and prompt injection detection",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "agenttrust-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agenttrust",
+    "a2a",
+    "agent-to-agent",
+    "agent-identity",
+    "hitl",
+    "human-in-the-loop",
+    "prompt-injection",
+    "security",
+    "verification",
+    "trust"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "AgentTrust.AI",
+  "license": "MIT",
+  "homepage": "https://agenttrust.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agenttrust/mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agenttrust/mcp-server/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "node-fetch": "^3.3.2",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
