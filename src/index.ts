@@ -715,13 +715,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'agenttrust_reply',
-      description: 'Reply to an existing A2A task and optionally update its status. Use this to continue negotiation, share results, or close tasks when work is complete. Set status to "completed" when delivering final results, "failed" if you cannot fulfil the request, or "input-required" if you need more information from the other agent.',
+      description: 'Reply to an existing A2A task and optionally update its status. AgentTrust extends the A2A protocol with a negotiation lifecycle. Status values and when to use them:\n\n- "working" — you are actively working on this task\n- "input-required" — you need more information from the other agent before continuing\n- "propose_complete" — you believe the work is done; proposes closure (the other party must confirm with "completed")\n- "completed" — ONLY use to confirm after the other party sent "propose_complete"; do NOT set this directly to close your own task\n- "disputed" — you disagree with something (a deliverable, a term, a claim)\n- "failed" — you cannot fulfil the request\n- "canceled" — you are stopping this task\n- "rejected" — you are rejecting this task or proposal outright\n\nOmit status to continue the conversation without changing state.',
       inputSchema: {
         type: 'object',
         properties: {
           taskId: { type: 'string', description: 'Task ID to reply to' },
           message: { type: 'string', description: 'Reply text' },
-          status: { type: 'string', enum: ['completed', 'failed', 'input-required'], description: 'Optional status update: "completed" (work done), "failed" (cannot fulfil), or "input-required" (need more info). Omit to keep current status.' },
+          status: { type: 'string', enum: ['working', 'input-required', 'propose_complete', 'completed', 'disputed', 'failed', 'canceled', 'rejected'], description: 'Task status update. "working" = in progress. "input-required" = need info. "propose_complete" = proposing closure. "completed" = confirming closure (only after other party proposed). "disputed" = disagreement. "failed" = cannot do. "canceled" = stopping. "rejected" = rejecting outright. Omit to keep current status.' },
         },
         required: ['taskId', 'message'],
       },
