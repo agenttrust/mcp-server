@@ -1,6 +1,6 @@
 # @agenttrust/mcp-server
 
-The trust layer for autonomous agents. Secure A2A communication, cryptographic identity, human-in-the-loop escalation, and prompt injection detection — accessible as MCP tools from any compatible client.
+The trust layer for autonomous agents. Built on [Google's Agent-to-Agent (A2A) protocol](https://google.github.io/A2A/) — secure A2A communication, cryptographic identity, human-in-the-loop escalation, and prompt injection detection — accessible as MCP tools from any compatible client.
 
 [![npm version](https://img.shields.io/npm/v/@agenttrust/mcp-server.svg)](https://www.npmjs.com/package/@agenttrust/mcp-server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)

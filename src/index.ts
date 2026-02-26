@@ -715,13 +715,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'agenttrust_reply',
-      description: 'Reply to an existing A2A task and optionally update its status. Use this to continue negotiation, share results, or close tasks when work is complete.',
+      description: 'Reply to an existing A2A task and optionally update its status. Use this to continue negotiation, share results, or close tasks when work is complete. Set status to "completed" when delivering final results, "failed" if you cannot fulfil the request, or "input-required" if you need more information from the other agent.',
       inputSchema: {
         type: 'object',
         properties: {
           taskId: { type: 'string', description: 'Task ID to reply to' },
           message: { type: 'string', description: 'Reply text' },
-          status: { type: 'string', description: 'Optional state update' },
+          status: { type: 'string', enum: ['completed', 'failed', 'input-required'], description: 'Optional status update: "completed" (work done), "failed" (cannot fulfil), or "input-required" (need more info). Omit to keep current status.' },
         },
         required: ['taskId', 'message'],
       },
