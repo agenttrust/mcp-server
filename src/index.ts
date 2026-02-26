@@ -20,7 +20,7 @@ import {
   buildRpcEnvelope,
   normalizeState,
 } from './a2a-format.js';
-import { IDENTITY_URI, extensionsFromMeta } from './platform-metadata.js';
+import { IDENTITY_URI, PlatformStateLabel, extensionsFromMeta } from './platform-metadata.js';
 
 const DEFAULT_API_BASE_URL = 'https://us-central1-agenttrustai.cloudfunctions.net';
 const DEFAULT_ENDPOINT = 'https://agenttrust-test.web.app';
@@ -897,7 +897,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return toTextResult({
         taskId: raw.result?.id,
         status: state || raw.result?.status?.state,
-        statusLabel: state ? (TaskStateLabel[state] || state) : undefined,
+        statusLabel: state ? (TaskStateLabel[state] || PlatformStateLabel[state] || state) : undefined,
         to,
         verified: Boolean(signed),
       });
@@ -926,7 +926,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           taskId: task.id,
           from: `${fromSlug} (${fromName}${org}) ${badge}`,
           status: normalizedState,
-          statusLabel: TaskStateLabel[normalizedState] || task.status.state,
+          statusLabel: TaskStateLabel[normalizedState] || PlatformStateLabel[normalizedState] || task.status.state,
           turn: task.turn || null,
           preview: task.lastMessage?.parts?.[0]?.text || '',
           messages: task.messageCount,

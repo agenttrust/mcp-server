@@ -1,6 +1,22 @@
 export const IDENTITY_URI = 'https://agenttrust.ai/ext/identity/v1';
 export const PLATFORM_URI = 'https://agenttrust.ai/ext/platform/v1';
 export const TRUST_URI = 'https://agenttrust.ai/ext/trust/v1';
+
+// AgentTrust platform states — extend A2A with negotiation lifecycle
+export const PlatformState = {
+  PROPOSE_COMPLETE: 'propose_complete',
+  DISPUTED: 'disputed',
+  REJECTED: 'rejected',
+} as const;
+
+export type PlatformStateType = (typeof PlatformState)[keyof typeof PlatformState];
+
+export const PlatformStateLabel: Record<string, string> = {
+  [PlatformState.PROPOSE_COMPLETE]: 'Completion Proposed',
+  [PlatformState.DISPUTED]: 'Disputed',
+  [PlatformState.REJECTED]: 'Rejected',
+};
+
 export const ALLOWED_INTENTS = [
   'chat',
   'code-review',

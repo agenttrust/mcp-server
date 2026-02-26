@@ -8,17 +8,12 @@ export const Role = {
 export type RoleType = (typeof Role)[keyof typeof Role];
 
 export const TaskState = {
-  // Standard A2A states
   SUBMITTED: 'submitted',
   WORKING: 'working',
   INPUT_REQUIRED: 'input-required',
   COMPLETED: 'completed',
   FAILED: 'failed',
   CANCELED: 'canceled',
-  // AgentTrust extended states (negotiation lifecycle)
-  PROPOSE_COMPLETE: 'propose_complete',
-  DISPUTED: 'disputed',
-  REJECTED: 'rejected',
 } as const;
 
 export type TaskStateType = (typeof TaskState)[keyof typeof TaskState];
@@ -30,9 +25,6 @@ export const TaskStateLabel: Record<string, string> = {
   [TaskState.COMPLETED]: 'Completed',
   [TaskState.FAILED]: 'Failed',
   [TaskState.CANCELED]: 'Canceled',
-  [TaskState.PROPOSE_COMPLETE]: 'Completion Proposed',
-  [TaskState.DISPUTED]: 'Disputed',
-  [TaskState.REJECTED]: 'Rejected',
 };
 
 export const Method = {
@@ -148,8 +140,7 @@ export function buildRpcEnvelope(
   };
 }
 
-const STATE_MAP: Record<string, TaskStateType> = {
-  // Standard A2A states
+const STATE_MAP: Record<string, string> = {
   submitted: TaskState.SUBMITTED,
   working: TaskState.WORKING,
   completed: TaskState.COMPLETED,
@@ -157,19 +148,14 @@ const STATE_MAP: Record<string, TaskStateType> = {
   canceled: TaskState.CANCELED,
   'input-required': TaskState.INPUT_REQUIRED,
   'awaiting-response': TaskState.INPUT_REQUIRED,
-  // A2A enum-style aliases
   TASK_STATE_SUBMITTED: TaskState.SUBMITTED,
   TASK_STATE_WORKING: TaskState.WORKING,
   TASK_STATE_COMPLETED: TaskState.COMPLETED,
   TASK_STATE_FAILED: TaskState.FAILED,
   TASK_STATE_CANCELED: TaskState.CANCELED,
   TASK_STATE_INPUT_REQUIRED: TaskState.INPUT_REQUIRED,
-  // AgentTrust extended states
-  propose_complete: TaskState.PROPOSE_COMPLETE,
-  disputed: TaskState.DISPUTED,
-  rejected: TaskState.REJECTED,
 };
 
-export function normalizeState(raw: string): TaskStateType {
-  return STATE_MAP[raw] || TaskState.SUBMITTED;
+export function normalizeState(raw: string): string {
+  return STATE_MAP[raw] || raw;
 }
