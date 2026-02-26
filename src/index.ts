@@ -80,14 +80,6 @@ interface ApiTaskContext {
   };
 }
 
-interface AgentProfile {
-  agent_id?: string;
-  slug?: string;
-  name?: string;
-  org?: string;
-  org_name?: string;
-}
-
 interface ApiContactItem {
   contact?: {
     slug?: string | null;
@@ -157,25 +149,24 @@ function resolveConfig(fileConfig: Record<string, unknown> | null): RuntimeConfi
   return { apiKey, endpoint, apiBaseUrl, slug, agentId };
 }
 
-async function fetchAgentBySlug(endpoint: string, apiKey: string, slug: string): Promise<AgentProfile | null> {
-  try {
-    return await apiRequest<AgentProfile>(
-      safeUrl(endpoint, `/a/${encodeURIComponent(slug)}?format=json`),
-      { method: 'GET', apiKey },
-    );
-  } catch {
-    return null;
-  }
+interface WhoAmIResponse {
+  agent?: {
+    slug?: string;
+    agentId?: string;
+    name?: string;
+  };
+  org?: {
+    name?: string;
+    orgId?: string;
+  };
 }
 
-async function fetchSingleAccessibleAgent(endpoint: string, apiKey: string): Promise<AgentProfile | null> {
+async function fetchWhoAmI(endpoint: string, apiKey: string): Promise<WhoAmIResponse | null> {
   try {
-    const payload = await apiRequest<{ agents?: AgentProfile[] }>(
-      safeUrl(endpoint, '/api/agents?limit=2'),
+    return await apiRequest<WhoAmIResponse>(
+      safeUrl(endpoint, '/api/whoami'),
       { method: 'GET', apiKey },
     );
-    if (!Array.isArray(payload.agents) || payload.agents.length !== 1) return null;
-    return payload.agents[0] || null;
   } catch {
     return null;
   }
@@ -186,22 +177,12 @@ async function loadRuntimeConfigInternal(): Promise<RuntimeConfig> {
   const hasDiskConfig = fileConfig !== null;
   const resolved = resolveConfig(fileConfig);
 
-  // Silent bootstrap: if no config exists but env API key is present, infer identity and save config.
+  // Silent bootstrap: if no config exists but env API key is present, resolve identity via /api/whoami.
   if (!hasDiskConfig && resolved.apiKey) {
-    let slug = resolved.slug;
-    let agentId = resolved.agentId;
+    const identity = await fetchWhoAmI(resolved.endpoint, resolved.apiKey);
+    const slug = readString(identity?.agent?.slug) || resolved.slug;
+    const agentId = readString(identity?.agent?.agentId) || resolved.agentId;
 
-    if (slug) {
-      const profile = await fetchAgentBySlug(resolved.endpoint, resolved.apiKey, slug);
-      slug = readString(profile?.slug) || slug;
-      agentId = readString(profile?.agent_id) || agentId;
-    } else {
-      const profile = await fetchSingleAccessibleAgent(resolved.endpoint, resolved.apiKey);
-      slug = readString(profile?.slug) || slug;
-      agentId = readString(profile?.agent_id) || agentId;
-    }
-
-    // Persist only when we can resolve agent identity. This keeps stdio startup non-interactive.
     if (slug && agentId) {
       const bootstrapped: RuntimeConfig = {
         ...resolved,
@@ -540,20 +521,15 @@ async function promptInput(promptText: string): Promise<string> {
 async function resolveAgentIdentityForSetup(
   endpoint: string,
   apiKey: string,
-  preferredSlug: string | null,
-): Promise<{ slug: string; agentId: string } | null> {
-  if (preferredSlug) {
-    const profile = await fetchAgentBySlug(endpoint, apiKey, preferredSlug);
-    const slug = readString(profile?.slug) || preferredSlug;
-    const agentId = readString(profile?.agent_id);
-    if (slug && agentId) return { slug, agentId };
-  }
-
-  const single = await fetchSingleAccessibleAgent(endpoint, apiKey);
-  const singleSlug = readString(single?.slug);
-  const singleAgentId = readString(single?.agent_id);
-  if (singleSlug && singleAgentId) return { slug: singleSlug, agentId: singleAgentId };
-  return null;
+): Promise<{ slug: string; agentId: string; name: string; orgName: string } | null> {
+  const identity = await fetchWhoAmI(endpoint, apiKey);
+  if (!identity?.agent?.slug || !identity?.agent?.agentId) return null;
+  return {
+    slug: identity.agent.slug,
+    agentId: identity.agent.agentId,
+    name: identity.agent.name || identity.agent.slug,
+    orgName: identity.org?.name || 'Unknown',
+  };
 }
 
 async function runInitCommand(): Promise<number> {
@@ -563,31 +539,40 @@ async function runInitCommand(): Promise<number> {
   const existingConfig = await readConfigFile();
   const initial = resolveConfig(existingConfig);
 
-  let apiKey = initial.apiKey || await promptInput('API key (atk_...): ');
+  const apiKey = initial.apiKey || await promptInput('API key (atk_...): ');
   if (!apiKey) {
     console.error('API key is required.');
     return 1;
   }
 
-  const endpointInput = await promptInput(`Endpoint [${initial.endpoint}]: `);
+  const endpointInput = await promptInput(`Endpoint [${initial.endpoint}] (press Enter to keep default): `);
   const endpoint = endpointInput || initial.endpoint;
-  const apiBaseInput = await promptInput(`API base URL [${initial.apiBaseUrl}]: `);
+  const apiBaseInput = await promptInput(`API base URL [${initial.apiBaseUrl}] (press Enter to keep default): `);
   const apiBaseUrl = apiBaseInput || initial.apiBaseUrl;
 
-  let slug = initial.slug || null;
-  const slugInput = await promptInput(`Agent slug${slug ? ` [${slug}]` : ''}: `);
-  if (slugInput) slug = slugInput.toLowerCase();
+  console.log('Resolving agent identity...');
+  const discovered = await resolveAgentIdentityForSetup(endpoint, apiKey);
 
-  const discovered = await resolveAgentIdentityForSetup(endpoint, apiKey, slug);
-  let agentId = discovered?.agentId || initial.agentId;
-  if (!slug && discovered?.slug) slug = discovered.slug;
+  let slug: string | null = null;
+  let agentId: string | null = null;
 
-  if (!slug) {
-    slug = (await promptInput('Could not auto-resolve slug. Enter agent slug: ')).toLowerCase();
+  if (discovered) {
+    console.log(`\n  Agent: ${discovered.name} (${discovered.slug})`);
+    console.log(`  Org:   ${discovered.orgName}\n`);
+    const confirm = await promptInput('Is this correct? [Y/n]: ');
+    if (confirm.toLowerCase() === 'n') {
+      slug = (await promptInput('Enter agent slug: ')).toLowerCase() || null;
+      agentId = await promptInput('Enter agent ID: ') || null;
+    } else {
+      slug = discovered.slug;
+      agentId = discovered.agentId;
+    }
+  } else {
+    console.log('Could not auto-resolve agent identity.');
+    slug = (await promptInput('Enter agent slug: ')).toLowerCase() || null;
+    agentId = await promptInput('Enter agent ID: ') || null;
   }
-  if (!agentId) {
-    agentId = await promptInput('Could not auto-resolve agent ID. Enter agent ID: ');
-  }
+
   if (!slug || !agentId) {
     console.error('Both slug and agent ID are required.');
     return 1;
@@ -609,7 +594,7 @@ async function runInitCommand(): Promise<number> {
     return 1;
   }
 
-  console.log(`Config saved: ${CONFIG_PATH}`);
+  console.log(`\nConfig saved: ${CONFIG_PATH}`);
   console.log(`Signing key path: ${keyPathForSlug(slug)}`);
   console.log('Setup complete.');
   return 0;
@@ -1120,8 +1105,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         method: 'GET',
         apiKey: config.apiKey,
       });
-      const profile = await fetchAgentBySlug(config.endpoint, config.apiKey || '', config.slug || '');
-      const orgName = readString(profile?.org) || readString(profile?.org_name) || 'Unknown';
+      const identity = await fetchWhoAmI(config.endpoint, config.apiKey || '');
+      const orgName = readString(identity?.org?.name) || 'Unknown';
       const entries = (result.contacts || [])
         .map((entry) => {
           const slug = readString(entry.contact?.slug);
