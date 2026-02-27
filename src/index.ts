@@ -7,7 +7,9 @@ import path from 'path';
 import readline from 'readline/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
 import nacl from 'tweetnacl';
 import {
@@ -611,19 +613,20 @@ async function runRegenKeysCommand(): Promise<number> {
   }
 }
 
-const server = new Server(
-  {
-    name: '@agenttrust/mcp-server',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+function createServer(): Server {
+  const srv = new Server(
+    {
+      name: '@agenttrust/mcp-server',
+      version: '1.0.0',
     },
-  },
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+srv.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'agenttrust_guard',
@@ -779,7 +782,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+srv.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
@@ -1140,15 +1143,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+  return srv;
+}
+
+// Global server instance for stdio mode
+const server = createServer();
+
 function printUsage(): void {
   console.log('Usage:');
   console.log('  agenttrust-mcp init           # interactive first-time setup');
   console.log('  agenttrust-mcp --status       # print config + key status');
   console.log('  agenttrust-mcp --regen-keys   # rotate signing key');
-  console.log('  agenttrust-mcp                # run MCP stdio server');
+  console.log('  agenttrust-mcp --http [port]  # run MCP HTTP server (default port 3000)');
+  console.log('  agenttrust-mcp                # run MCP stdio server (default)');
 }
 
-async function runStdioServer(): Promise<void> {
+async function ensureConfigReady(): Promise<void> {
   const config = await loadRuntimeConfig();
   if (!config.apiKey) {
     throw makeError('AgentTrust is not configured. Run `agenttrust-mcp init` or set AGENTTRUST_API_KEY.');
@@ -1158,13 +1168,74 @@ async function runStdioServer(): Promise<void> {
       'Agent identity is not fully configured. Run `agenttrust-mcp init` or set AGENTTRUST_SLUG and AGENTTRUST_AGENT_ID.',
     );
   }
-
-  // Ensure signing capability is ready up front when identity is known.
   await getOrCreateSigningKey(config);
+}
 
+async function runStdioServer(): Promise<void> {
+  await ensureConfigReady();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('AgentTrust MCP server running on stdio');
+}
+
+async function runHttpServer(port: number): Promise<void> {
+  await ensureConfigReady();
+
+  const app = express();
+  // Do NOT use express.json() globally — StreamableHTTPServerTransport parses its own body
+
+  // Map of active transports by session ID
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+
+  // Handle all MCP requests — POST (messages), GET (SSE streams), DELETE (cleanup)
+  app.all('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    // Existing session — route to its transport
+    if (sessionId && transports.has(sessionId)) {
+      const transport = transports.get(sessionId)!;
+      await transport.handleRequest(req, res);
+      if (req.method === 'DELETE') transports.delete(sessionId);
+      return;
+    }
+
+    // No session — only POST allowed (for initialize)
+    if (req.method !== 'POST') {
+      res.status(400).json({ error: 'Invalid or missing session ID' });
+      return;
+    }
+
+    // New session — create transport, connect server, let transport handle the request
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) transports.delete(sid);
+    };
+
+    const sessionServer = createServer();
+    await sessionServer.connect(transport);
+
+    // Let transport handle the request — it will assign session ID internally
+    await transport.handleRequest(req, res);
+
+    // Store transport after handling (session ID is now set)
+    if (transport.sessionId) {
+      transports.set(transport.sessionId, transport);
+    }
+  });
+
+  // Health check
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', sessions: transports.size });
+  });
+
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`AgentTrust MCP server running on http://0.0.0.0:${port}/mcp`);
+    console.log(`Health check: http://0.0.0.0:${port}/health`);
+  });
 }
 
 async function main() {
@@ -1184,6 +1255,11 @@ async function main() {
   if (cmd === '--regen-keys') {
     const code = await runRegenKeysCommand();
     process.exitCode = code;
+    return;
+  }
+  if (cmd === '--http') {
+    const port = parseInt(args[1], 10) || 3000;
+    await runHttpServer(port);
     return;
   }
   if (cmd === '--help' || cmd === '-h') {

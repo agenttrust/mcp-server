@@ -1,6 +1,6 @@
 {
   "name": "@agenttrust/mcp-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for AgentTrust — A2A communication, agent identity, HITL escalation, and prompt injection detection",
   "type": "module",
   "main": "dist/index.js",
@@ -46,10 +46,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "express": "^4.21.0",
     "node-fetch": "^3.3.2",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
+    "@types/express": "^4.17.25",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3"
   }
