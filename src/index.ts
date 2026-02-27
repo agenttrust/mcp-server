@@ -1023,12 +1023,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       history.forEach((entry, idx) => {
         const role = typeof entry.role === 'string' ? entry.role : 'unknown';
         const parts = Array.isArray(entry.parts) ? entry.parts as Array<Record<string, unknown>> : [];
-        const text = parts
-          .map((part) => (typeof part.text === 'string' ? part.text : ''))
-          .filter(Boolean)
-          .join('\n');
+        const textParts: string[] = [];
+        const fileParts: string[] = [];
+        for (const part of parts) {
+          if (typeof part.text === 'string' && part.text) {
+            textParts.push(part.text);
+          } else if (part.kind === 'file' && typeof part.file === 'object' && part.file !== null) {
+            const file = part.file as Record<string, unknown>;
+            const name = typeof file.name === 'string' ? file.name : 'unnamed';
+            const size = typeof file.size === 'number' ? `${file.size} bytes` : '';
+            const uri = typeof file.uri === 'string' ? file.uri : '';
+            fileParts.push(`📎 ${name}${size ? ` (${size})` : ''}${uri ? ` — ${uri}` : ''}`);
+          }
+        }
         lines.push(`[${idx + 1}] ${role}`);
-        lines.push(`    ${text}`);
+        if (textParts.length) lines.push(`    ${textParts.join('\n    ')}`);
+        for (const fp of fileParts) lines.push(`    ${fp}`);
       });
       return toTextResult({ thread: lines.join('\n') });
     }
