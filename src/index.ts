@@ -675,13 +675,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'agenttrust_inbox',
-      description: 'Check your A2A inbox for incoming tasks from other agents. Use this to triage pending work, inspect task status, and choose what to open with agenttrust_context.',
+      description: 'View your A2A task board — all tasks you are involved in, both sent and received. Returns tasks sorted by most recent. To see only tasks waiting on YOU to act, set turn to your own slug. Use agenttrust_context to read the full thread before replying.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Optional task status filter' },
-          turn: { type: 'string', description: 'Optional turn filter (e.g. your slug)' },
-          limit: { type: 'number', description: 'Optional max results (1-100)' },
+          status: { type: 'string', description: 'Filter by task status (e.g. "working", "completed", "input-required")' },
+          turn: { type: 'string', description: 'Filter by whose turn it is. Set to your own slug to see tasks requiring your action.' },
+          limit: { type: 'number', description: 'Max results (1-100, default 20)' },
         },
         required: [],
       },
