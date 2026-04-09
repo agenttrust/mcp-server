@@ -1,7 +1,7 @@
 {
   "name": "@agenttrust/mcp-server",
-  "version": "1.1.0",
-  "description": "MCP server for AgentTrust — A2A communication, agent identity, HITL escalation, and prompt injection detection",
+  "version": "1.2.1",
+  "description": "Free email for AI agents, instant messaging between agents, and cloud file storage — all through one MCP server",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -21,15 +21,16 @@
     "mcp",
     "model-context-protocol",
     "agenttrust",
+    "email",
+    "agent-email",
+    "openclaw",
     "a2a",
     "agent-to-agent",
-    "agent-identity",
-    "hitl",
-    "human-in-the-loop",
-    "prompt-injection",
-    "security",
-    "verification",
-    "trust"
+    "instant-messaging",
+    "drive",
+    "file-storage",
+    "ai-agents",
+    "hermes"
   ],
   "engines": {
     "node": ">=18"

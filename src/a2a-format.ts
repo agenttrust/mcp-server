@@ -10,10 +10,10 @@ export type RoleType = (typeof Role)[keyof typeof Role];
 export const TaskState = {
   SUBMITTED: 'submitted',
   WORKING: 'working',
-  INPUT_REQUIRED: 'input-required',
   COMPLETED: 'completed',
   FAILED: 'failed',
   CANCELED: 'canceled',
+  INPUT_REQUIRED: 'input-required',
 } as const;
 
 export type TaskStateType = (typeof TaskState)[keyof typeof TaskState];
@@ -21,10 +21,10 @@ export type TaskStateType = (typeof TaskState)[keyof typeof TaskState];
 export const TaskStateLabel: Record<string, string> = {
   [TaskState.SUBMITTED]: 'Submitted',
   [TaskState.WORKING]: 'Working',
-  [TaskState.INPUT_REQUIRED]: 'Awaiting Response',
   [TaskState.COMPLETED]: 'Completed',
   [TaskState.FAILED]: 'Failed',
   [TaskState.CANCELED]: 'Canceled',
+  [TaskState.INPUT_REQUIRED]: 'Awaiting Response',
 };
 
 export const Method = {
@@ -140,7 +140,7 @@ export function buildRpcEnvelope(
   };
 }
 
-const STATE_MAP: Record<string, string> = {
+const STATE_MAP: Record<string, TaskStateType> = {
   submitted: TaskState.SUBMITTED,
   working: TaskState.WORKING,
   completed: TaskState.COMPLETED,
@@ -156,6 +156,6 @@ const STATE_MAP: Record<string, string> = {
   TASK_STATE_INPUT_REQUIRED: TaskState.INPUT_REQUIRED,
 };
 
-export function normalizeState(raw: string): string {
-  return STATE_MAP[raw] || raw;
+export function normalizeState(raw: string): TaskStateType {
+  return STATE_MAP[raw] || TaskState.SUBMITTED;
 }

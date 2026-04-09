@@ -7,9 +7,7 @@ import path from 'path';
 import readline from 'readline/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import express, { Request, Response } from 'express';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
 import nacl from 'tweetnacl';
 import {
@@ -22,7 +20,7 @@ import {
   buildRpcEnvelope,
   normalizeState,
 } from './a2a-format.js';
-import { IDENTITY_URI, PlatformStateLabel, extensionsFromMeta } from './platform-metadata.js';
+import { IDENTITY_URI, extensionsFromMeta } from './platform-metadata.js';
 
 const DEFAULT_ENDPOINT = 'https://agenttrust.ai';
 const CONFIG_DIR = path.join(os.homedir(), '.agenttrust');
@@ -77,6 +75,26 @@ interface ApiTaskContext {
   };
   to?: {
     slug?: string | null;
+  };
+}
+
+interface AgentProfile {
+  agent_id?: string;
+  slug?: string;
+  name?: string;
+  org?: string;
+  org_name?: string;
+}
+
+interface WhoAmIResponse {
+  agent?: {
+    slug?: string;
+    agentId?: string;
+    name?: string;
+  };
+  org?: {
+    name?: string;
+    orgId?: string;
   };
 }
 
@@ -144,22 +162,21 @@ function resolveConfig(fileConfig: Record<string, unknown> | null): RuntimeConfi
   return { apiKey, endpoint, slug, agentId };
 }
 
-interface WhoAmIResponse {
-  agent?: {
-    slug?: string;
-    agentId?: string;
-    name?: string;
-  };
-  org?: {
-    name?: string;
-    orgId?: string;
-  };
+async function fetchAgentBySlug(endpoint: string, apiKey: string, slug: string): Promise<AgentProfile | null> {
+  try {
+    return await apiRequest<AgentProfile>(
+      safeUrl(endpoint, `/a/${encodeURIComponent(slug)}?format=json`),
+      { method: 'GET', apiKey },
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function fetchWhoAmI(endpoint: string, apiKey: string): Promise<WhoAmIResponse | null> {
   try {
     return await apiRequest<WhoAmIResponse>(
-      safeUrl(endpoint, '/api/whoami'),
+      safeUrl(endpoint, '/api/me'),
       { method: 'GET', apiKey },
     );
   } catch {
@@ -172,12 +189,22 @@ async function loadRuntimeConfigInternal(): Promise<RuntimeConfig> {
   const hasDiskConfig = fileConfig !== null;
   const resolved = resolveConfig(fileConfig);
 
-  // Silent bootstrap: if no config exists but env API key is present, resolve identity via /api/whoami.
+  // Silent bootstrap: if no config exists but env API key is present, infer identity and save config.
   if (!hasDiskConfig && resolved.apiKey) {
-    const identity = await fetchWhoAmI(resolved.endpoint, resolved.apiKey);
-    const slug = readString(identity?.agent?.slug) || resolved.slug;
-    const agentId = readString(identity?.agent?.agentId) || resolved.agentId;
+    let slug = resolved.slug;
+    let agentId = resolved.agentId;
 
+    if (slug) {
+      const profile = await fetchAgentBySlug(resolved.endpoint, resolved.apiKey, slug);
+      slug = readString(profile?.slug) || slug;
+      agentId = readString(profile?.agent_id) || agentId;
+    } else {
+      const whoami = await fetchWhoAmI(resolved.endpoint, resolved.apiKey);
+      slug = readString(whoami?.agent?.slug) || slug;
+      agentId = readString(whoami?.agent?.agentId) || agentId;
+    }
+
+    // Persist only when we can resolve agent identity. This keeps stdio startup non-interactive.
     if (slug && agentId) {
       const bootstrapped: RuntimeConfig = {
         ...resolved,
@@ -226,7 +253,7 @@ async function apiRequest<T>(
   },
 ): Promise<T> {
   const headers: Record<string, string> = {};
-  if (init.apiKey) headers['x-api-key'] = init.apiKey;
+  if (init.apiKey) headers['Authorization'] = `Bearer ${init.apiKey}`;
   if (init.body) headers['Content-Type'] = 'application/json';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), init.timeoutMs ?? 20_000);
@@ -515,15 +542,20 @@ async function promptInput(promptText: string): Promise<string> {
 async function resolveAgentIdentityForSetup(
   endpoint: string,
   apiKey: string,
-): Promise<{ slug: string; agentId: string; name: string; orgName: string } | null> {
-  const identity = await fetchWhoAmI(endpoint, apiKey);
-  if (!identity?.agent?.slug || !identity?.agent?.agentId) return null;
-  return {
-    slug: identity.agent.slug,
-    agentId: identity.agent.agentId,
-    name: identity.agent.name || identity.agent.slug,
-    orgName: identity.org?.name || 'Unknown',
-  };
+  preferredSlug: string | null,
+): Promise<{ slug: string; agentId: string } | null> {
+  if (preferredSlug) {
+    const profile = await fetchAgentBySlug(endpoint, apiKey, preferredSlug);
+    const slug = readString(profile?.slug) || preferredSlug;
+    const agentId = readString(profile?.agent_id);
+    if (slug && agentId) return { slug, agentId };
+  }
+
+  const whoami = await fetchWhoAmI(endpoint, apiKey);
+  const whoamiSlug = readString(whoami?.agent?.slug);
+  const whoamiAgentId = readString(whoami?.agent?.agentId);
+  if (whoamiSlug && whoamiAgentId) return { slug: whoamiSlug, agentId: whoamiAgentId };
+  return null;
 }
 
 async function runInitCommand(): Promise<number> {
@@ -533,37 +565,29 @@ async function runInitCommand(): Promise<number> {
   const existingConfig = await readConfigFile();
   const initial = resolveConfig(existingConfig);
 
-  const apiKey = initial.apiKey || await promptInput('API key (atk_...): ');
+  let apiKey = initial.apiKey || await promptInput('API key (atk_...): ');
   if (!apiKey) {
     console.error('API key is required.');
     return 1;
   }
 
-  const endpointInput = await promptInput(`Endpoint [${initial.endpoint}] (press Enter to keep default): `);
+  const endpointInput = await promptInput(`Endpoint [${initial.endpoint}]: `);
   const endpoint = endpointInput || initial.endpoint;
-  console.log('Resolving agent identity...');
-  const discovered = await resolveAgentIdentityForSetup(endpoint, apiKey);
 
-  let slug: string | null = null;
-  let agentId: string | null = null;
+  let slug = initial.slug || null;
+  const slugInput = await promptInput(`Agent slug${slug ? ` [${slug}]` : ''}: `);
+  if (slugInput) slug = slugInput.toLowerCase();
 
-  if (discovered) {
-    console.log(`\n  Agent: ${discovered.name} (${discovered.slug})`);
-    console.log(`  Org:   ${discovered.orgName}\n`);
-    const confirm = await promptInput('Is this correct? [Y/n]: ');
-    if (confirm.toLowerCase() === 'n') {
-      slug = (await promptInput('Enter agent slug: ')).toLowerCase() || null;
-      agentId = await promptInput('Enter agent ID: ') || null;
-    } else {
-      slug = discovered.slug;
-      agentId = discovered.agentId;
-    }
-  } else {
-    console.log('Could not auto-resolve agent identity.');
-    slug = (await promptInput('Enter agent slug: ')).toLowerCase() || null;
-    agentId = await promptInput('Enter agent ID: ') || null;
+  const discovered = await resolveAgentIdentityForSetup(endpoint, apiKey, slug);
+  let agentId = discovered?.agentId || initial.agentId;
+  if (!slug && discovered?.slug) slug = discovered.slug;
+
+  if (!slug) {
+    slug = (await promptInput('Could not auto-resolve slug. Enter agent slug: ')).toLowerCase();
   }
-
+  if (!agentId) {
+    agentId = await promptInput('Could not auto-resolve agent ID. Enter agent ID: ');
+  }
   if (!slug || !agentId) {
     console.error('Both slug and agent ID are required.');
     return 1;
@@ -584,7 +608,7 @@ async function runInitCommand(): Promise<number> {
     return 1;
   }
 
-  console.log(`\nConfig saved: ${CONFIG_PATH}`);
+  console.log(`Config saved: ${CONFIG_PATH}`);
   console.log(`Signing key path: ${keyPathForSlug(slug)}`);
   console.log('Setup complete.');
   return 0;
@@ -613,56 +637,20 @@ async function runRegenKeysCommand(): Promise<number> {
   }
 }
 
-function createServer(): Server {
-  const srv = new Server(
-    {
-      name: '@agenttrust/mcp-server',
-      version: '1.0.0',
+const server = new Server(
+  {
+    name: '@agenttrust/mcp-server',
+    version: '1.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
     },
-    {
-      capabilities: {
-        tools: {},
-      },
-    },
-  );
+  },
+);
 
-srv.setRequestHandler(ListToolsRequestSchema, async () => ({
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    {
-      name: 'agenttrust_guard',
-      description: 'Analyze text for prompt injection attacks, command injection, and social engineering attempts. Use to scan untrusted input before processing - user messages, emails, web content, and tool outputs. Returns a risk assessment with detected threats and a recommended action.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: 'Text to analyze for security threats' },
-          capabilities: { type: 'array', items: { type: 'string' }, description: 'Optional capability context for risk calibration (for example send_messages, run_tools, make_payments)' },
-        },
-        required: ['text'],
-      },
-    },
-    {
-      name: 'agenttrust_issue_code',
-      description: 'Issue a one-time Trust Code for agent-to-human verification. Use when your agent needs to prove identity to a human in outreach, support, or other sensitive interactions. Returns a code and verification URL the human can use.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          payload: { type: 'string', description: 'What this code authorizes in human-readable terms' },
-          expiration_seconds: { type: 'number', description: 'Optional expiration in seconds (default 172800)' },
-        },
-        required: ['payload'],
-      },
-    },
-    {
-      name: 'agenttrust_verify_code',
-      description: 'Verify a Trust Code from another party before proceeding. Use when you receive a code from an agent or human and need to confirm issuer identity, organization, and authorization context.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'Trust Code value' },
-        },
-        required: ['code'],
-      },
-    },
     {
       name: 'agenttrust_send',
       description: 'Send a message to another agent via the AgentTrust A2A relay. Creates a new task or continues an existing one when taskId is provided. Use agenttrust_discover first if you need to find recipient slugs.',
@@ -678,26 +666,26 @@ srv.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'agenttrust_inbox',
-      description: 'View your A2A task board — all tasks you are involved in, both sent and received. Returns tasks sorted by most recent. To see only tasks waiting on YOU to act, set turn to your own slug. Use agenttrust_context to read the full thread before replying.',
+      description: 'Check your A2A inbox for incoming tasks from other agents. Use this to triage pending work, inspect task status, and choose what to open with agenttrust_context.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Filter by task status (e.g. "working", "completed", "input-required")' },
-          turn: { type: 'string', description: 'Filter by whose turn it is. Set to your own slug to see tasks requiring your action.' },
-          limit: { type: 'number', description: 'Max results (1-100, default 20)' },
+          status: { type: 'string', description: 'Optional task status filter' },
+          turn: { type: 'string', description: 'Optional turn filter (e.g. your slug)' },
+          limit: { type: 'number', description: 'Optional max results (1-100)' },
         },
         required: [],
       },
     },
     {
       name: 'agenttrust_reply',
-      description: 'Reply to an existing A2A task and optionally update its status. AgentTrust extends the A2A protocol with a negotiation lifecycle. Status values and when to use them:\n\n- "working" — you are actively working on this task\n- "input-required" — you need more information from the other agent before continuing\n- "propose_complete" — you believe the work is done; proposes closure (the other party must confirm with "completed")\n- "completed" — ONLY use to confirm after the other party sent "propose_complete"; do NOT set this directly to close your own task\n- "disputed" — you disagree with something (a deliverable, a term, a claim)\n- "failed" — you cannot fulfil the request\n- "canceled" — you are stopping this task\n- "rejected" — you are rejecting this task or proposal outright\n\nOmit status to continue the conversation without changing state.',
+      description: 'Reply to an existing A2A task and optionally update its status. Use this to continue negotiation, share results, or close tasks when work is complete.',
       inputSchema: {
         type: 'object',
         properties: {
           taskId: { type: 'string', description: 'Task ID to reply to' },
           message: { type: 'string', description: 'Reply text' },
-          status: { type: 'string', enum: ['working', 'input-required', 'propose_complete', 'completed', 'disputed', 'failed', 'canceled', 'rejected'], description: 'Task status update. "working" = in progress. "input-required" = need info. "propose_complete" = proposing closure. "completed" = confirming closure (only after other party proposed). "disputed" = disagreement. "failed" = cannot do. "canceled" = stopping. "rejected" = rejecting outright. Omit to keep current status.' },
+          status: { type: 'string', description: 'Optional state update' },
         },
         required: ['taskId', 'message'],
       },
@@ -750,93 +738,161 @@ srv.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    // ── Agent Drive tools ───────────────────────────────────────────
     {
-      name: 'agenttrust_status',
-      description: 'Check your current AgentTrust identity and runtime status, including endpoint identity, signing key status, and pending task count.',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-        required: [],
-      },
-    },
-    {
-      name: 'agenttrust_cancel',
-      description: 'Cancel an ongoing A2A task. Use when work should stop and both sides should see the task as canceled.',
+      name: 'agenttrust_drive_upload',
+      description: 'Upload a file to your Agent Drive. Provide the file content as a base64-encoded string. Files are stored per-agent and subject to your plan\'s storage quota.',
       inputSchema: {
         type: 'object',
         properties: {
-          taskId: { type: 'string', description: 'Task ID to cancel' },
+          name: { type: 'string', description: 'Filename (e.g. report.pdf)' },
+          path: { type: 'string', description: 'Optional folder path (e.g. reports/q1). Defaults to root.' },
+          content: { type: 'string', description: 'Base64-encoded file content' },
+          mime_type: { type: 'string', description: 'MIME type (default: application/octet-stream)' },
         },
-        required: ['taskId'],
+        required: ['name', 'content'],
       },
     },
     {
-      name: 'agenttrust_allowlist',
-      description: 'View your organization allowlist to see which agents and organizations are permitted to contact your agents. This tool is read-only; allowlist changes are managed by your org admin in the AgentTrust dashboard.',
+      name: 'agenttrust_drive_list',
+      description: 'List files in your Agent Drive. Optionally filter by folder path prefix.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Optional folder path prefix to filter by' },
+          limit: { type: 'number', description: 'Max results (default 100)' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'agenttrust_drive_download',
+      description: 'Download a file from Agent Drive. Returns a signed download URL valid for 1 hour.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to download' },
+        },
+        required: ['file_id'],
+      },
+    },
+    {
+      name: 'agenttrust_drive_delete',
+      description: 'Delete a file from your Agent Drive. This permanently removes the file and frees storage quota.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'File ID to delete' },
+        },
+        required: ['file_id'],
+      },
+    },
+    {
+      name: 'agenttrust_drive_usage',
+      description: 'Check your Agent Drive storage usage and plan limits.',
       inputSchema: {
         type: 'object',
         properties: {},
         required: [],
+      },
+    },
+    // ── Email tools ─────────────────────────────────────────────────
+    {
+      name: 'agenttrust_email_inbox',
+      description: 'List your email inbox. Returns inbound and outbound emails with sender, subject, status, and timestamps. Filter by direction or unread status.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', description: 'Filter: "inbound" or "outbound". Omit for all.' },
+          status: { type: 'string', description: 'Filter by status: "received", "read", "replied", "sent", "draft"' },
+          limit: { type: 'number', description: 'Max results (default 50)' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'agenttrust_email_read',
+      description: 'Read an email by ID. By default returns the full conversation thread (all related emails, oldest first). Set thread=false to read only the single email.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          email_id: { type: 'string', description: 'Email ID to read' },
+          thread: { type: 'boolean', description: 'Return full thread (default true) or single email (false)' },
+        },
+        required: ['email_id'],
+      },
+    },
+    {
+      name: 'agenttrust_email_attachment',
+      description: 'Download an email attachment. Returns a signed download URL (valid 1 hour), filename, MIME type, and size. Use email_read first to see available attachments and their indexes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          email_id: { type: 'string', description: 'Email ID the attachment belongs to' },
+          index: { type: 'number', description: 'Attachment index (0-based, from the attachments array in email_read response)' },
+        },
+        required: ['email_id', 'index'],
+      },
+    },
+    {
+      name: 'agenttrust_email_forward',
+      description: 'Forward an email to another address. Includes the original message quoted below and preserves attachments. Optionally add a note above the forwarded content.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          email_id: { type: 'string', description: 'Email ID to forward' },
+          to: { type: 'string', description: 'Recipient email address' },
+          note: { type: 'string', description: 'Optional note to include above the forwarded message' },
+        },
+        required: ['email_id', 'to'],
+      },
+    },
+    {
+      name: 'agenttrust_email_send',
+      description: 'Send an email from your agent\'s address. If draft-only mode is enabled for your agent, the email is saved as a draft for human approval instead of sending immediately.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject' },
+          body: { type: 'string', description: 'Email body (plain text)' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+    {
+      name: 'agenttrust_email_reply',
+      description: 'Reply to an existing email. The reply is sent from your agent\'s email address to the original sender.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          email_id: { type: 'string', description: 'Email ID to reply to' },
+          body: { type: 'string', description: 'Reply body (plain text)' },
+        },
+        required: ['email_id', 'body'],
+      },
+    },
+    {
+      name: 'agenttrust_email_draft',
+      description: 'Create a draft email for human review. The draft appears in the dashboard Drafts page where a human operator can review, edit, approve, or discard it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject' },
+          body: { type: 'string', description: 'Email body (plain text)' },
+        },
+        required: ['to', 'subject', 'body'],
       },
     },
   ],
 }));
 
-srv.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
     const config = await loadRuntimeConfig();
-
-    if (name === 'agenttrust_guard') {
-      requireConfigured(config, name);
-      const text = typeof args?.text === 'string' ? args.text : '';
-      if (!text.trim()) throw makeError('text is required');
-      const capabilities = Array.isArray(args?.capabilities) ? args.capabilities : [];
-      const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.endpoint, '/api/guard'),
-        {
-          method: 'POST',
-          apiKey: config.apiKey,
-          body: { text, capabilities },
-        },
-      );
-      return toTextResult(result);
-    }
-
-    if (name === 'agenttrust_issue_code') {
-      requireConfigured(config, name);
-      const payload = typeof args?.payload === 'string' ? args.payload : '';
-      if (!payload.trim()) throw makeError('payload is required');
-      const expirationSeconds = typeof args?.expiration_seconds === 'number' ? args.expiration_seconds : 172800;
-      const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.endpoint, '/api/issue'),
-        {
-          method: 'POST',
-          apiKey: config.apiKey,
-          body: {
-            payload,
-            expiration_seconds: expirationSeconds,
-          },
-        },
-      );
-      return toTextResult(result);
-    }
-
-    if (name === 'agenttrust_verify_code') {
-      requireConfigured(config, name);
-      const code = typeof args?.code === 'string' ? args.code : '';
-      if (!code.trim()) throw makeError('code is required');
-      const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.endpoint, '/api/verify'),
-        {
-          method: 'POST',
-          apiKey: config.apiKey,
-          body: { code },
-        },
-      );
-      return toTextResult(result);
-    }
 
     if (name === 'agenttrust_send') {
       requireConfigured(config, name, { requireSlug: true });
@@ -873,7 +929,7 @@ srv.setRequestHandler(CallToolRequestSchema, async (request) => {
       return toTextResult({
         taskId: raw.result?.id,
         status: state || raw.result?.status?.state,
-        statusLabel: state ? (TaskStateLabel[state] || PlatformStateLabel[state] || state) : undefined,
+        statusLabel: state ? (TaskStateLabel[state] || state) : undefined,
         to,
         verified: Boolean(signed),
       });
@@ -902,7 +958,7 @@ srv.setRequestHandler(CallToolRequestSchema, async (request) => {
           taskId: task.id,
           from: `${fromSlug} (${fromName}${org}) ${badge}`,
           status: normalizedState,
-          statusLabel: TaskStateLabel[normalizedState] || PlatformStateLabel[normalizedState] || task.status.state,
+          statusLabel: TaskStateLabel[normalizedState] || task.status.state,
           turn: task.turn || null,
           preview: task.lastMessage?.parts?.[0]?.text || '',
           messages: task.messageCount,
@@ -1026,22 +1082,12 @@ srv.setRequestHandler(CallToolRequestSchema, async (request) => {
       history.forEach((entry, idx) => {
         const role = typeof entry.role === 'string' ? entry.role : 'unknown';
         const parts = Array.isArray(entry.parts) ? entry.parts as Array<Record<string, unknown>> : [];
-        const textParts: string[] = [];
-        const fileParts: string[] = [];
-        for (const part of parts) {
-          if (typeof part.text === 'string' && part.text) {
-            textParts.push(part.text);
-          } else if (part.kind === 'file' && typeof part.file === 'object' && part.file !== null) {
-            const file = part.file as Record<string, unknown>;
-            const name = typeof file.name === 'string' ? file.name : 'unnamed';
-            const size = typeof file.size === 'number' ? `${file.size} bytes` : '';
-            const uri = typeof file.uri === 'string' ? file.uri : '';
-            fileParts.push(`📎 ${name}${size ? ` (${size})` : ''}${uri ? ` — ${uri}` : ''}`);
-          }
-        }
+        const text = parts
+          .map((part) => (typeof part.text === 'string' ? part.text : ''))
+          .filter(Boolean)
+          .join('\n');
         lines.push(`[${idx + 1}] ${role}`);
-        if (textParts.length) lines.push(`    ${textParts.join('\n    ')}`);
-        for (const fp of fileParts) lines.push(`    ${fp}`);
+        lines.push(`    ${text}`);
       });
       return toTextResult({ thread: lines.join('\n') });
     }
@@ -1058,75 +1104,167 @@ srv.setRequestHandler(CallToolRequestSchema, async (request) => {
       return toTextResult(result);
     }
 
-    if (name === 'agenttrust_status') {
-      requireConfigured(config, name, { requireSlug: true });
-      const inboxUrl = new URL(safeUrl(config.endpoint, `/r/${encodeURIComponent(config.slug || '')}/inbox`));
-      inboxUrl.searchParams.set('turn', config.slug || '');
-      inboxUrl.searchParams.set('limit', '1');
-      const inbox = await apiRequest<{ total?: number }>(inboxUrl.toString(), {
-        method: 'GET',
-        apiKey: config.apiKey,
-      });
-      const keyInfo = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.endpoint, `/a/${encodeURIComponent(config.slug || '')}/key`),
-        { method: 'GET', apiKey: config.apiKey },
-      ).catch(() => ({}));
-      const keyInfoRecord = keyInfo as Record<string, unknown>;
-      return toTextResult({
-        slug: config.slug,
-        agentId: config.agentId,
-        endpoint: safeUrl(config.endpoint, `/r/${encodeURIComponent(config.slug || '')}`),
-        keyStatus: keyInfoRecord.key_status || 'unknown',
-        keyExpires: keyInfoRecord.expires_at || null,
-        pendingTasks: inbox.total || 0,
-      });
-    }
-
-    if (name === 'agenttrust_cancel') {
-      requireConfigured(config, name, { requireSlug: true });
-      const taskId = typeof args?.taskId === 'string' ? args.taskId.trim() : '';
-      if (!taskId) throw makeError('taskId is required');
+    // ── Agent Drive tool handlers ─────────────────────────────────
+    if (name === 'agenttrust_drive_upload') {
+      requireConfigured(config, name);
+      const fileName = typeof args?.name === 'string' ? args.name : '';
+      const content = typeof args?.content === 'string' ? args.content : '';
+      if (!fileName.trim()) throw makeError('name is required');
+      if (!content.trim()) throw makeError('content (base64) is required');
+      const filePath = typeof args?.path === 'string' ? args.path : fileName;
+      const mimeType = typeof args?.mime_type === 'string' ? args.mime_type : 'application/octet-stream';
       const result = await apiRequest<Record<string, unknown>>(
-        safeUrl(config.endpoint, `/r/${encodeURIComponent(config.slug || '')}/inbox/${encodeURIComponent(taskId)}/cancel`),
+        safeUrl(config.endpoint, '/api/drive/upload'),
         {
           method: 'POST',
           apiKey: config.apiKey,
-          body: {},
+          body: { name: fileName, path: filePath, content, mime_type: mimeType, created_by: 'agent' },
         },
       );
       return toTextResult(result);
     }
 
-    if (name === 'agenttrust_allowlist') {
-      requireConfigured(config, name, { requireSlug: true });
-      const url = new URL(safeUrl(config.endpoint, `/r/${encodeURIComponent(config.slug || '')}/contacts`));
-      url.searchParams.set('limit', '100');
-      url.searchParams.set('offset', '0');
-      const result = await apiRequest<ApiContactsResponse>(url.toString(), {
+    if (name === 'agenttrust_drive_list') {
+      requireConfigured(config, name);
+      const url = new URL(safeUrl(config.endpoint, '/api/drive/files'));
+      if (typeof args?.path === 'string' && args.path) url.searchParams.set('path', args.path);
+      if (typeof args?.limit === 'number') url.searchParams.set('limit', String(args.limit));
+      const result = await apiRequest<Record<string, unknown>>(url.toString(), {
         method: 'GET',
         apiKey: config.apiKey,
       });
-      const identity = await fetchWhoAmI(config.endpoint, config.apiKey || '');
-      const orgName = readString(identity?.org?.name) || 'Unknown';
-      const entries = (result.contacts || [])
-        .map((entry) => {
-          const slug = readString(entry.contact?.slug);
-          if (!slug) return null;
-          const org = readString(entry.contact?.orgName) || 'Unknown';
-          const addedAt = toDateOnly(entry.createdAt) || toDateOnly(entry.updatedAt) || '';
-          return {
-            slug,
-            org,
-            addedAt,
-          };
-        })
-        .filter((entry): entry is { slug: string; org: string; addedAt: string } => Boolean(entry));
-      return toTextResult({
-        mode: 'allowlist',
-        scope: 'organisation',
-        org: orgName,
-        entries,
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_drive_download') {
+      requireConfigured(config, name);
+      const fileId = typeof args?.file_id === 'string' ? args.file_id : '';
+      if (!fileId.trim()) throw makeError('file_id is required');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, `/api/drive/files/${encodeURIComponent(fileId)}/download`),
+        {
+          method: 'GET',
+          apiKey: config.apiKey,
+        },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_drive_delete') {
+      requireConfigured(config, name);
+      const fileId = typeof args?.file_id === 'string' ? args.file_id : '';
+      if (!fileId.trim()) throw makeError('file_id is required');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, `/api/drive/files/${encodeURIComponent(fileId)}`),
+        {
+          method: 'DELETE',
+          apiKey: config.apiKey,
+        },
+      );
+      return toTextResult(result);
+    }
+
+    // ── Email tool handlers ───────────────────────────────────────
+    if (name === 'agenttrust_email_inbox') {
+      requireConfigured(config, name);
+      const url = new URL(safeUrl(config.endpoint, '/api/email/inbox'));
+      if (typeof args?.direction === 'string' && args.direction) url.searchParams.set('direction', args.direction);
+      if (typeof args?.status === 'string' && args.status) url.searchParams.set('status', args.status);
+      if (typeof args?.limit === 'number') url.searchParams.set('limit', String(args.limit));
+      const result = await apiRequest<Record<string, unknown>>(url.toString(), { method: 'GET', apiKey: config.apiKey });
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_read') {
+      requireConfigured(config, name);
+      const emailId = typeof args?.email_id === 'string' ? args.email_id : '';
+      if (!emailId.trim()) throw makeError('email_id is required');
+      const thread = args?.thread !== false; // default true
+      const url = new URL(safeUrl(config.endpoint, `/api/email/messages/${encodeURIComponent(emailId)}`));
+      if (thread) url.searchParams.set('thread', 'true');
+      const result = await apiRequest<Record<string, unknown>>(url.toString(), {
+        method: 'GET',
+        apiKey: config.apiKey,
       });
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_attachment') {
+      requireConfigured(config, name);
+      const emailId = typeof args?.email_id === 'string' ? args.email_id : '';
+      const index = typeof args?.index === 'number' ? args.index : -1;
+      if (!emailId.trim()) throw makeError('email_id is required');
+      if (index < 0) throw makeError('index is required (0-based)');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, `/api/email/messages/${encodeURIComponent(emailId)}/attachments/${index}/download`),
+        { method: 'GET', apiKey: config.apiKey },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_forward') {
+      requireConfigured(config, name);
+      const emailId = typeof args?.email_id === 'string' ? args.email_id : '';
+      const to = typeof args?.to === 'string' ? args.to : '';
+      const note = typeof args?.note === 'string' ? args.note : '';
+      if (!emailId.trim() || !to.trim()) throw makeError('email_id and to are required');
+      const body: Record<string, unknown> = { email_id: emailId, to };
+      if (note) body.note = note;
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, '/api/email/forward'),
+        { method: 'POST', apiKey: config.apiKey, body },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_send') {
+      requireConfigured(config, name);
+      const to = typeof args?.to === 'string' ? args.to : '';
+      const subject = typeof args?.subject === 'string' ? args.subject : '';
+      const body = typeof args?.body === 'string' ? args.body : '';
+      if (!to.trim() || !subject.trim() || !body.trim()) throw makeError('to, subject, and body are required');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, '/api/email/send'),
+        { method: 'POST', apiKey: config.apiKey, body: { to, subject, body_text: body } },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_reply') {
+      requireConfigured(config, name);
+      const emailId = typeof args?.email_id === 'string' ? args.email_id : '';
+      const body = typeof args?.body === 'string' ? args.body : '';
+      if (!emailId.trim() || !body.trim()) throw makeError('email_id and body are required');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, '/api/email/reply'),
+        { method: 'POST', apiKey: config.apiKey, body: { email_id: emailId, body_text: body } },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_email_draft') {
+      requireConfigured(config, name);
+      const to = typeof args?.to === 'string' ? args.to : '';
+      const subject = typeof args?.subject === 'string' ? args.subject : '';
+      const body = typeof args?.body === 'string' ? args.body : '';
+      if (!to.trim() || !subject.trim()) throw makeError('to and subject are required');
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, '/api/email/draft'),
+        { method: 'POST', apiKey: config.apiKey, body: { to, subject, body_text: body } },
+      );
+      return toTextResult(result);
+    }
+
+    if (name === 'agenttrust_drive_usage') {
+      requireConfigured(config, name);
+      const result = await apiRequest<Record<string, unknown>>(
+        safeUrl(config.endpoint, '/api/drive/usage'),
+        {
+          method: 'GET',
+          apiKey: config.apiKey,
+        },
+      );
+      return toTextResult(result);
     }
 
     throw makeError(`Unknown tool: ${name}`);
@@ -1143,22 +1281,15 @@ srv.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-  return srv;
-}
-
-// Global server instance for stdio mode
-const server = createServer();
-
 function printUsage(): void {
   console.log('Usage:');
   console.log('  agenttrust-mcp init           # interactive first-time setup');
   console.log('  agenttrust-mcp --status       # print config + key status');
   console.log('  agenttrust-mcp --regen-keys   # rotate signing key');
-  console.log('  agenttrust-mcp --http [port]  # run MCP HTTP server (default port 3000)');
-  console.log('  agenttrust-mcp                # run MCP stdio server (default)');
+  console.log('  agenttrust-mcp                # run MCP stdio server');
 }
 
-async function ensureConfigReady(): Promise<void> {
+async function runStdioServer(): Promise<void> {
   const config = await loadRuntimeConfig();
   if (!config.apiKey) {
     throw makeError('AgentTrust is not configured. Run `agenttrust-mcp init` or set AGENTTRUST_API_KEY.');
@@ -1168,74 +1299,13 @@ async function ensureConfigReady(): Promise<void> {
       'Agent identity is not fully configured. Run `agenttrust-mcp init` or set AGENTTRUST_SLUG and AGENTTRUST_AGENT_ID.',
     );
   }
-  await getOrCreateSigningKey(config);
-}
 
-async function runStdioServer(): Promise<void> {
-  await ensureConfigReady();
+  // Ensure signing capability is ready up front when identity is known.
+  await getOrCreateSigningKey(config);
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('AgentTrust MCP server running on stdio');
-}
-
-async function runHttpServer(port: number): Promise<void> {
-  await ensureConfigReady();
-
-  const app = express();
-  // Do NOT use express.json() globally — StreamableHTTPServerTransport parses its own body
-
-  // Map of active transports by session ID
-  const transports = new Map<string, StreamableHTTPServerTransport>();
-
-  // Handle all MCP requests — POST (messages), GET (SSE streams), DELETE (cleanup)
-  app.all('/mcp', async (req: Request, res: Response) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    // Existing session — route to its transport
-    if (sessionId && transports.has(sessionId)) {
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res);
-      if (req.method === 'DELETE') transports.delete(sessionId);
-      return;
-    }
-
-    // No session — only POST allowed (for initialize)
-    if (req.method !== 'POST') {
-      res.status(400).json({ error: 'Invalid or missing session ID' });
-      return;
-    }
-
-    // New session — create transport, connect server, let transport handle the request
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
-
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) transports.delete(sid);
-    };
-
-    const sessionServer = createServer();
-    await sessionServer.connect(transport);
-
-    // Let transport handle the request — it will assign session ID internally
-    await transport.handleRequest(req, res);
-
-    // Store transport after handling (session ID is now set)
-    if (transport.sessionId) {
-      transports.set(transport.sessionId, transport);
-    }
-  });
-
-  // Health check
-  app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', sessions: transports.size });
-  });
-
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`AgentTrust MCP server running on http://0.0.0.0:${port}/mcp`);
-    console.log(`Health check: http://0.0.0.0:${port}/health`);
-  });
 }
 
 async function main() {
@@ -1255,11 +1325,6 @@ async function main() {
   if (cmd === '--regen-keys') {
     const code = await runRegenKeysCommand();
     process.exitCode = code;
-    return;
-  }
-  if (cmd === '--http') {
-    const port = parseInt(args[1], 10) || 3000;
-    await runHttpServer(port);
     return;
   }
   if (cmd === '--help' || cmd === '-h') {
